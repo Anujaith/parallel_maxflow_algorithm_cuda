@@ -1,1 +1,332 @@
+%%cu
+#include<stdio.h>
+#include<stdlib.h>
+#include<iostream>
+#include<cuda.h>
+#include<bits/stdc++.h>
+#include <sys/time.h>
+#define milliseconds 1e3
+using namespace std;
 
+// fuction called to finding out residual capacity
+void ResidualCap(int no_nodes,const char* Input,u_short* residualCap)
+{   
+    // declaration of variable
+    ifstream file;
+	file.open(Input);
+    int destination;
+    int source;
+    string line;
+    short capacity;
+  
+     // opening input file to storing value in source, destination and capacity
+    while (file) 
+    {
+        getline(file, line);
+
+        if (line.empty())
+         {
+            continue;
+        }
+ 
+        std::stringstream linestream(line);
+         // takes user input from text file 
+        linestream >> source >> destination >> capacity;
+     
+         // here finding the residual capacity of network
+        residualCap[destination + source * no_nodes] = capacity;
+    }
+ // closing file after reading input
+  file.close();
+}
+
+void InputReading(const char* Input, u_short* residualCap, int no_nodes)
+ {
+
+	ifstream file;
+  // here opening file for takes input
+	file.open(Input);
+
+// here checking condition file is file empty or not
+	if (!file) 
+ {
+        cout <<  "input.txt file failed to open.";
+        exit(1);
+ }
+    // function calling to calculating residual capacity
+    ResidualCap(no_nodes,Input,residualCap);
+    
+}
+
+// here define stucture for node
+typedef struct _Node_info
+{
+	short parent_index;
+	int potential_flow;
+} Node_info;
+ 
+// here kernel called for calculating the neighbour node,exsting node augmented path
+__global__ void finding_augmented_path(int no_nodes,u_short* residualCap,bool* border, Node_info* node_info,   
+	 u_int sink,bool* visited, u_int* locks)
+{
+
+	int id = threadIdx.x + blockIdx.x * blockDim.x ;
+
+	if(!border[sink] && id < no_nodes && border[id])
+ {
+
+		border[id] = false;
+		visited[id] = true;
+
+		u_int capacity;
+    Node_info *neighbour;
+		Node_info current_node_info = node_info[id];
+		
+
+		for (int j = id; j < no_nodes; ++j)
+  {
+			
+			if(border[j] || visited[j] || ((capacity = residualCap[id * no_nodes + j]) <= 0)){
+				continue;
+			}
+
+			if(atomicCAS(locks+j, 0 , 1) == 1 || border[j])
+   {
+				continue;
+	 }
+       
+       locks[j] = 0;
+			border[j] = true;
+			
+
+			neighbour = node_info + j;
+			neighbour->parent_index = id;
+			neighbour->potential_flow =  min(current_node_info.potential_flow, capacity);				
+		}
+		
+
+		for (int j = 0; j < id; ++j)
+   {
+			
+			if(border[j] || visited[j] || ((capacity = residualCap[id * no_nodes + j]) <= 0))
+   {
+				continue;
+   }
+
+			if(atomicCAS(locks+j, 0 , 1) == 1 || border[j])
+   {
+				continue;
+	 }
+
+    	locks[j] = 0;
+			border[j] = true;
+		
+
+			neighbour =j+ node_info ;
+			neighbour->parent_index = id;
+			neighbour->potential_flow =  min(current_node_info.potential_flow, capacity);				
+		}
+	}
+}
+   
+   // here kernel called to exchanging the value of node
+__global__ void changing(int no_nodes,Node_info* node_info, bool* visited,int source, bool* border, u_int* locks)
+{
+	int id = threadIdx.x + blockIdx.x * blockDim.x ;
+	if( no_nodes >id )
+ {
+    visited[id] = false;
+		border[id] = id == source;
+		locks[id] = 0; 
+		node_info[id].potential_flow = UINT_MAX;
+		
+	}
+}
+ 
+ // here kernel called to finding augmented path of each node
+__global__ void augmenting_path(int no_nodes,Node_info* node_infos,u_short* residualCap, bool* do_change_capacity , u_int flow_bottleneck)
+{
+	int id = threadIdx.x + blockIdx.x * blockDim.x;
+    if( id < no_nodes && do_change_capacity[id]){
+        Node_info* existing_node_info = id+node_infos ;
+        residualCap[existing_node_info->parent_index * no_nodes + id] =residualCap[existing_node_info->parent_index * no_nodes + id] - flow_bottleneck;
+        residualCap[id * no_nodes + existing_node_info->parent_index] =residualCap[id * no_nodes + existing_node_info->parent_index] + flow_bottleneck; 
+    }    
+}
+
+ // here function called to changing host value 
+void changing_host(int no_nodes, int source, bool* border, bool* do_change_cap)
+{
+	do_change_cap[source] = false;
+  border[source] = true;
+
+
+	for (int j = source+1; j < no_nodes; j++) 
+ {
+		do_change_cap[j] = false;
+    border[j] = false;
+		
+	}
+
+	for (int j = 0; j < source; j++)
+  {
+		do_change_cap[j] = false;
+    border[j] = false;		
+	
+	}
+}
+
+// here function is checking boundary condition of node
+bool is_border_empty_or_sink_found(int V, bool* border,  int sink_pos)
+{
+	for (int j = V-1; j > -1; --j) 
+ {
+		if(border[j]){
+			return j == sink_pos;
+		}
+	}
+	return true;
+}
+
+
+// here main funcion is written 
+ 
+int main()
+{
+   
+   // here initialized number of vertex  
+	int V = 6;
+	u_short *residualCap;
+ 
+   // here calculating the matrix size =V*V
+	size_t matrix_size = V * V * sizeof(u_short);
+  // here assign the max memory of the residual capacity
+	residualCap = (u_short *)malloc(matrix_size);
+ //here cuda memset function is called
+	memset(residualCap, 0, matrix_size); 
+
+ //	inputfile = input("Enter Vertex file : ")
+//number_of_vrt = input("Enter Input file : ")
+   // FILE *inputfilepointer;
+    
+    //File Opening for read
+    // char *inputfilename ="input1.txt";
+
+ // here reading input from the text file and finding out residual capacity of the network
+	InputReading("6.txt", residualCap, V);
+
+// here intialized sink ,source,maxflow value and declaration of variable
+  int sink=V-1;
+	int source=0;
+  int flow_bottleneck;
+	int existing_vertex; 
+  int maxFlow = 0;
+
+ 
+// here also initialized some other variable
+ u_short* do_residualCap;
+	Node_info* existing_node_info;
+		bool* border;
+	u_int* do_lock;
+bool* do_change_cap;
+ bool* visited;
+ bool* change_capacity;
+ bool* do_border;
+ 
+// here declaration of node 
+  Node_info* d_node_info;
+	Node_info* node_info;
+clock_t start_time = clock(); 
+
+// Here allocating host memory
+
+	size_t node_infos_size = V * sizeof(Node_info);
+	node_info = (Node_info*)malloc(node_infos_size);
+
+	size_t vertices_size = V * sizeof(bool);
+	border = (bool *)malloc(vertices_size);
+	do_change_cap = (bool *)malloc(vertices_size);
+
+	size_t locks_size = V * sizeof(u_int);
+
+// Here allocating CUDA device global memory
+   
+  cudaMalloc((void **)&change_capacity, vertices_size);
+	cudaMalloc((void **)&do_residualCap, matrix_size);
+	cudaMalloc((void **)&visited, vertices_size);
+	cudaMalloc((void **)&d_node_info,node_infos_size);
+	cudaMalloc((void **)&do_border, vertices_size);
+ cudaMalloc((void **)&do_lock, locks_size);
+
+cudaMemcpy(do_residualCap, residualCap, matrix_size, cudaMemcpyHostToDevice);
+
+	bool correct_augmented_path;
+ 
+// here calculating the number of blocks
+	int threads = 512;
+ int blocks =0;
+  blocks = ceil(V * 1.0 /threads);
+  
+	
+ 
+	do
+ {
+
+		// Here changing the value of visited, border, node_info, locks
+		changing<<<blocks, threads >>>( V, d_node_info, visited, source, do_border, do_lock);
+		changing_host(V, source,border,  do_change_cap);
+
+		while(!is_border_empty_or_sink_found( V,border, sink))
+  {
+				// Here Invoking the kernel
+				finding_augmented_path<<< blocks, threads >>>(V,do_residualCap, do_border,d_node_info,sink, visited, do_lock);
+
+				// Here Copy back border from device
+				cudaMemcpy(border, do_border, vertices_size, cudaMemcpyDeviceToHost);
+		}
+
+		correct_augmented_path= border[sink];
+
+		if(!correct_augmented_path)
+  {
+			break;
+	}
+
+		// copy node_info from device to host
+		cudaMemcpy(node_info, d_node_info, node_infos_size, cudaMemcpyDeviceToHost);
+
+		flow_bottleneck = node_info[sink].potential_flow;
+		maxFlow = maxFlow + flow_bottleneck;
+
+		for(existing_vertex = sink; existing_vertex != source; existing_vertex = existing_node_info->parent_index)
+  {
+			existing_node_info = node_info + existing_vertex;
+			do_change_cap[existing_vertex] = true;
+	}
+
+		cudaMemcpy(change_capacity, do_change_cap, vertices_size, cudaMemcpyHostToDevice);
+
+		augmenting_path<<< blocks, threads >>>(V,d_node_info,do_residualCap, change_capacity, flow_bottleneck);
+
+	}
+ while(correct_augmented_path);
+
+	cout << "\nMaxFlow of the network is " << maxFlow << endl;
+    double total_time_taken = ((double)clock() - start_time)/CLOCKS_PER_SEC * milliseconds; // in milliseconds 
+	cout <<"Time taken by function to execute is " <<total_time_taken << " ms for thread size " << threads << endl;
+
+// free host memory
+	free(residualCap);
+  	free(node_info);
+	free(border);
+
+
+ // free device memory
+  cudaFree(do_border);
+	cudaFree(d_node_info);
+	cudaFree(visited);
+  cudaFree(do_residualCap);
+
+ // return 0 and end program
+ return 0;
+}
