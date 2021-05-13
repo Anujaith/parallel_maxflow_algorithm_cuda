@@ -2,11 +2,11 @@
 Algorithm used- I'm using Ford-fulkerson algorithm to find out the Max flow of the network.
 
 
-Code structure- src contains parallel implementation.
+Code structure- In src contains parallel implementation code.
 
 
-dataset - contains graphs of varying size to find maxflow of.
+testcases- there are two sample testcases to find maxflow of the network.
 
 
 
-code execution -compile maxflow.cu file in Google colab.
+code execution -compile maxflow.cu file in Google colab or nvcc src/filename.cu.
